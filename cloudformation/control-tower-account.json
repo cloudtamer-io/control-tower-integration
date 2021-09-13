@@ -1,0 +1,432 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "cloudtamer.io Integration with Control Tower - Creates a CloudWatch event rule that triggers a Lambda on account creation to apply a Service Catalog product for Control Tower (MPCT-xgqwlzsq).",
+    "Metadata": {
+        "VersionDate": {
+            "Value": "20201029"
+        },
+        "Identifier": {
+            "Value": "control-tower-account.json"
+        },
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "Automation Configuration"
+                    },
+                    "Parameters": [
+                        "ParameterPortfolioId",
+                        "ParameterProductId",
+                        "ParameterProductVersion",
+                        "ParameterOU",
+                        "ParameterSSOFirstName",
+                        "ParameterSSOLastName",
+                        "ParameterServiceRole",
+                        "ParameterCloudtamerAccount",
+                        "ParameterS3Bucket",
+                        "ParameterS3Key"
+                    ]
+                }
+            ],
+            "ParameterLabels": {
+                "ParameterPortfolioId": {
+                    "default": "Portfolio ID"
+                },
+                "ParameterProductId": {
+                    "default": "Product ID"
+                },
+                "ParameterProductVersion": {
+                    "default": "Product Version"
+                },
+                "ParameterOU": {
+                    "default": "OU Name"
+                },
+                "ParameterSSOFirstName": {
+                    "default": "SSO First Name"
+                },
+                "ParameterSSOLastName": {
+                    "default": "SSO Last Name"
+                },
+                "ParameterServiceRole": {
+                    "default": "Service Role"
+                },
+                "ParameterCloudtamerAccount": {
+                    "default": "cloudtamer.io Account"
+                },
+                "ParameterS3Bucket": {
+                    "default": "S3 Bucket"
+                },
+                "ParameterS3Key": {
+                    "default": "S3 Key"
+                }
+            }
+        }
+    },
+    "Parameters": {
+        "ParameterPortfolioId": {
+            "Type": "String",
+            "Description": "Service Catalog portfolio ID for 'AWS Control Tower Account Factory'.",
+            "Default": "port-xxxxxxxxxxxx"
+        },
+        "ParameterProductId": {
+            "Type": "String",
+            "Description": "Service Catalog product ID for the 'AWS Control Tower Account Factory' product.",
+            "Default": "prod-xxxxxxxxxxxx"
+        },
+        "ParameterProductVersion": {
+            "Type": "String",
+            "Description": "Service Catalog product version for the 'AWS Control Tower Account Factory' product.",
+            "Default": "pa-xxxxxxxxxxxx"
+        },
+        "ParameterOU": {
+            "Type": "String",
+            "Description": "OU where new AWS accounts will be placed.",
+            "Default": "Custom"
+        },
+        "ParameterSSOFirstName": {
+            "Type": "String",
+            "Description": "First name of the SSO user for Control Tower.",
+            "Default": ""
+        },
+        "ParameterSSOLastName": {
+            "Type": "String",
+            "Description": "Last name of the SSO user for Control Tower.",
+            "Default": ""
+        },
+        "ParameterServiceRole": {
+            "Type": "String",
+            "Description": "Role name that is accessible from the payer.",
+            "Default": "OrganizationAccountAccessRole"
+        },
+        "ParameterCloudtamerAccount": {
+            "Type": "String",
+            "Description": "AWS account number where cloudtamer.io is installed."
+        },
+        "ParameterS3Bucket": {
+            "Type": "String",
+            "Description": "Region specific S3 bucket where the Lambda code exists. For instance, if launching stack in us-east-1, a value of 'aws-integration-cdn' will use S3 bucket: aws-integration-cdn.us-east-1.",
+            "Default": "aws-integration-cdn"
+        },
+        "ParameterS3Key": {
+            "Type": "String",
+            "Description": "S3 key where the Lambda code exists.",
+            "Default": "control-tower/lambda-provision-product.zip"
+        }
+    },
+    "Conditions": {
+        "DifferentAccount": {
+            "Fn::Not": [
+                {
+                    "Fn::Equals": [
+                        {
+                            "Ref": "AWS::AccountId"
+                        },
+                        {
+                            "Ref": "ParameterCloudtamerAccount"
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    "Resources": {
+        "ServiceCatalogPrincipal": {
+            "Type": "AWS::ServiceCatalog::PortfolioPrincipalAssociation",
+            "Properties": {
+                "PortfolioId": {
+                    "Ref": "ParameterPortfolioId"
+                },
+                "PrincipalARN": {
+                    "Fn::GetAtt": [
+                        "LambdaRole",
+                        "Arn"
+                    ]
+                },
+                "PrincipalType": "IAM"
+            }
+        },
+        "PermissionForEventsToInvokeLambda": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Ref": "LambdaFunction"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::GetAtt": [
+                        "CloudWatchEventRule",
+                        "Arn"
+                    ]
+                }
+            }
+        },
+        "CloudWatchEventRule": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "Trigger Lambda on CreateAccount.",
+                "EventPattern": {
+                    "source": [
+                        "aws.organizations"
+                    ],
+                    "detail-type": [
+                        "AWS API Call via CloudTrail"
+                    ],
+                    "detail": {
+                        "eventSource": [
+                            "organizations.amazonaws.com"
+                        ],
+                        "eventName": [
+                            "CreateAccount"
+                        ]
+                    }
+                },
+                "Name": "AccountCreationRule",
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Id": "Lambda",
+                        "Arn": {
+                            "Fn::GetAtt": [
+                                "LambdaFunction",
+                                "Arn"
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "LambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "allow-control-tower-integration",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "organizations:DescribeCreateAccountStatus",
+                                        "organizations:DescribeAccount",
+                                        "sso:CreateAccountAssignment",
+                                        "sso:ListAccountAssignments",
+                                        "sso:GetProfile",
+                                        "sso:CreateProfile",
+                                        "sso:UpdateProfile",
+                                        "sso:AssociateProfile",
+                                        "sso:CreateApplicationInstance",
+                                        "sso:GetSSOStatus",
+                                        "sso:GetTrust",
+                                        "sso:CreateTrust",
+                                        "sso:UpdateTrust",
+                                        "sso:GetPeregrineStatus",
+                                        "sso:GetApplicationInstance",
+                                        "sso:ListDirectoryAssociations",
+                                        "sso:ListPermissionSets",
+                                        "sso:GetPermissionSet",
+                                        "sso:ProvisionApplicationInstanceForAWSAccount",
+                                        "sso:ProvisionApplicationProfileForAWSAccountInstance",
+                                        "sso:ProvisionSAMLProvider",
+                                        "sso:ListProfileAssociations",
+                                        "sso-directory:ListMembersInGroup",
+                                        "sso-directory:AddMemberToGroup",
+                                        "sso-directory:SearchGroups",
+                                        "sso-directory:SearchGroupsWithGroupName",
+                                        "sso-directory:SearchUsers",
+                                        "sso-directory:CreateUser",
+                                        "sso-directory:DescribeGroups",
+                                        "sso-directory:DescribeDirectory",
+                                        "sso-directory:GetUserPoolInfo",
+                                        "controltower:CreateManagedAccount",
+                                        "controltower:DescribeManagedAccount",
+                                        "controltower:DeregisterManagedAccount",
+                                        "s3:GetObject",
+                                        "organizations:describeOrganization",
+                                        "sso:DescribeRegisteredRegions",
+                                        "servicecatalog:DisassociatePrincipalFromPortfolio",
+                                        "servicecatalog:AssociatePrincipalWithPortfolio"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "sts:AssumeRole"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Sub": "arn:${AWS::Partition}:iam::*:role/${ParameterServiceRole}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "ManagedPolicyArns": [
+                    {
+                        "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                    },
+                    {
+                        "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AWSServiceCatalogAdminReadOnlyAccess"
+                    },
+                    {
+                        "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AWSServiceCatalogEndUserFullAccess"
+                    }
+                ],
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "LambdaFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Timeout": 120,
+                "Code": {
+                    "S3Bucket": {
+                        "Fn::Join": [
+                            ".",
+                            [
+                                {
+                                    "Ref": "ParameterS3Bucket"
+                                },
+                                {
+                                    "Ref": "AWS::Region"
+                                }
+                            ]
+                        ]
+                    },
+                    "S3Key": {
+                        "Ref": "ParameterS3Key"
+                    }
+                },
+                "Environment": {
+                    "Variables": {
+                        "ProductId": {
+                            "Ref": "ParameterProductId"
+                        },
+                        "ProductVersion": {
+                            "Ref": "ParameterProductVersion"
+                        },
+                        "OU": {
+                            "Ref": "ParameterOU"
+                        },
+                        "FirstName": {
+                            "Ref": "ParameterSSOFirstName"
+                        },
+                        "LastName": {
+                            "Ref": "ParameterSSOLastName"
+                        },
+                        "ServiceRole": {
+                            "Ref": "ParameterServiceRole"
+                        },
+                        "PayerAccountId": {
+                            "Ref": "AWS::AccountId"
+                        },
+                        "Partition": {
+                            "Ref": "AWS::Partition"
+                        }
+                    }
+                },
+                "Description": "This lambda function provisions a Service Catalog product for Control Tower on new accounts created using Organizations.",
+                "Handler": "index.handler",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "LambdaRole",
+                        "Arn"
+                    ]
+                },
+                "Runtime": "nodejs12.x"
+            }
+        },
+        "CloudWatchIAMRole": {
+            "Type": "AWS::IAM::Role",
+            "Condition": "DifferentAccount",
+            "Properties": {
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "AllowEventBusAccess",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "events:PutEvents"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${ParameterCloudtamerAccount}:event-bus/default"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "events.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                }
+            }
+        },
+        "CloudWatchEventRuleForEventBus": {
+            "Type": "AWS::Events::Rule",
+            "Condition": "DifferentAccount",
+            "Properties": {
+                "Description": "Forward Control Tower account creation to cloudtamer.io account.",
+                "EventPattern": {
+                    "source": [
+                        "aws.controltower"
+                    ],
+                    "detail-type": [
+                        "AWS Service Event via CloudTrail"
+                    ],
+                    "detail": {
+                        "eventName": [
+                            "CreateManagedAccount"
+                        ]
+                    }
+                },
+                "Name": "AccountCreationRule",
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Id": "EventBus",
+                        "Arn": {
+                            "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${ParameterCloudtamerAccount}:event-bus/default"
+                        },
+                        "RoleArn": {
+                            "Fn::GetAtt": [
+                                "CloudWatchIAMRole",
+                                "Arn"
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    }
+}
