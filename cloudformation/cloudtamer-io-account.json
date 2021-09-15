@@ -1,0 +1,288 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Control Tower Integration with cloudtamer.io - Creates a Lambda the triggers from an Event bus for an account creation that registers a Control Tower account with cloudtamer.io (MPCT-xgqwlzsq).",
+    "Metadata": {
+        "VersionDate": {
+            "Value": "20201029"
+        },
+        "Identifier": {
+            "Value": "cloudtamer-io-account.json"
+        },
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "Automation Configuration"
+                    },
+                    "Parameters": [
+                        "ParameterMasterAccount",
+                        "ParameterCloudtamerURL",
+                        "ParameterSSMParameter",
+                        "ParameterServiceRole",
+                        "ParameterS3Bucket",
+                        "ParameterS3Key",
+                        "ParameterSecurityGroup",
+                        "ParameterSubnets"
+                    ]
+                }
+            ],
+            "ParameterLabels": {
+                "ParameterMasterAccount": {
+                    "default": "Master Payer Account"
+                },
+                "ParameterCloudtamerURL": {
+                    "default": "cloudtamer.io URL"
+                },
+                "ParameterSSMParameter": {
+                    "default": "API Key"
+                },
+                "ParameterServiceRole": {
+                    "default": "Service Role"
+                },
+                "ParameterS3Bucket": {
+                    "default": "S3 Bucket"
+                },
+                "ParameterS3Key": {
+                    "default": "S3 Key"
+                },
+                "ParameterSecurityGroup": {
+                    "default": "Security Group"
+                },
+                "ParameterSubnets": {
+                    "default": "Private Subnets"
+                }
+            }
+        }
+    },
+    "Parameters": {
+        "ParameterMasterAccount": {
+            "Type": "String",
+            "Description": "AWS payer account number where Control Tower is enabled."
+        },
+        "ParameterCloudtamerURL": {
+            "Type": "String",
+            "Description": "cloudtamer.io URL. Example: cloudtamer.example.com"
+        },
+        "ParameterSSMParameter": {
+            "Type": "String",
+            "Description": "SSM parameter name for the SecureString where the cloudtamer.io API key is stored."
+        },
+        "ParameterServiceRole": {
+            "Type": "String",
+            "Description": "Role name that is accessible from the payer.",
+            "Default": "AWSControlTowerExecution"
+        },
+        "ParameterS3Bucket": {
+            "Type": "String",
+            "Description": "Region specific S3 bucket where the Lambda code exists. For instance, if launching stack in us-east-1, a value of 'aws-integration-cdn' will use S3 bucket: aws-integration-cdn.us-east-1.",
+            "Default": "aws-integration-cdn"
+        },
+        "ParameterS3Key": {
+            "Type": "String",
+            "Description": "S3 key where the Lambda code exists.",
+            "Default": "control-tower/lambda-register-with-cloudtamer-io.zip"
+        },
+        "ParameterSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup::Id",
+            "Description": "Security group to attach to the Lambda. This security group should have permission to interact with the cloudtamer.io API so it's recommended to use the 'cloudtamer-internal' security group.",
+            "MinLength": "1"
+        },
+        "ParameterSubnets": {
+            "Type": "List<AWS::EC2::Subnet::Id>",
+            "Description": "Subnets for Lambda. These must be the same subnets as the cloudtamer.io nodes with the ability to access the internet (via NATs) if using a public user-facing load balancer.",
+            "MinLength": "1"
+        }
+    },
+    "Conditions": {
+        "SameAccount": {
+            "Fn::Equals": [
+                {
+                    "Ref": "AWS::AccountId"
+                },
+                {
+                    "Ref": "ParameterMasterAccount"
+                }
+            ]
+        }
+    },
+    "Resources": {
+        "PermissionForEventsToInvokeLambda": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Ref": "LambdaFunction"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::GetAtt": [
+                        "CloudWatchEventRule",
+                        "Arn"
+                    ]
+                }
+            }
+        },
+        "CloudWatchEventRule": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "Trigger Lambda on CreateManagedAccount.",
+                "EventPattern": {
+                    "account": {
+                        "Fn::If": [
+                            "SameAccount",
+                            {
+                                "Ref": "AWS::NoValue"
+                            },
+                            [
+                                {
+                                    "Ref": "ParameterMasterAccount"
+                                }
+                            ]
+                        ]
+                    },
+                    "source": [
+                        "aws.controltower"
+                    ],
+                    "detail-type": [
+                        "AWS Service Event via CloudTrail"
+                    ],
+                    "detail": {
+                        "eventName": [
+                            "CreateManagedAccount"
+                        ]
+                    }
+                },
+                "Name": "ManagedAccountCreationRule",
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Id": "Lambda",
+                        "Arn": {
+                            "Fn::GetAtt": [
+                                "LambdaFunction",
+                                "Arn"
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "LambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "allow-register-cloudtamer-io",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "ssm:GetParameter"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "sts:AssumeRole"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Sub": "arn:${AWS::Partition}:iam::*:role/${ParameterServiceRole}"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "ManagedPolicyArns": [
+                    {
+                        "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                    },
+                    {
+                        "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaENIManagementAccess"
+                    }
+                ],
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "LambdaFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Timeout": 120,
+                "Code": {
+                    "S3Bucket": {
+                        "Fn::Join": [
+                            ".",
+                            [
+                                {
+                                    "Ref": "ParameterS3Bucket"
+                                },
+                                {
+                                    "Ref": "AWS::Region"
+                                }
+                            ]
+                        ]
+                    },
+                    "S3Key": {
+                        "Ref": "ParameterS3Key"
+                    }
+                },
+                "Environment": {
+                    "Variables": {
+                        "ServiceRole": {
+                            "Ref": "ParameterServiceRole"
+                        },
+                        "PayerAccountId": {
+                            "Ref": "ParameterMasterAccount"
+                        },
+                        "Partition": {
+                            "Ref": "AWS::Partition"
+                        },
+                        "cloudtamerioURL": {
+                            "Ref": "ParameterCloudtamerURL"
+                        },
+                        "SSMParameter": {
+                            "Ref": "ParameterSSMParameter"
+                        }
+                    }
+                },
+                "Description": "This lambda function registers an account created in Control Tower with cloudtamer.io.",
+                "Handler": "index.handler",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "LambdaRole",
+                        "Arn"
+                    ]
+                },
+                "Runtime": "nodejs12.x",
+                "VpcConfig": {
+                    "SecurityGroupIds": [
+                        {
+                            "Ref": "ParameterSecurityGroup"
+                        }
+                    ],
+                    "SubnetIds": {
+                        "Ref": "ParameterSubnets"
+                    }
+                }
+            }
+        }
+    }
+}
